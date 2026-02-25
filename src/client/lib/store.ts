@@ -8,6 +8,7 @@ import type {
   Agent,
   AgentMessage,
   AgentRole,
+  AntigravityIDEState,
   Session,
   WSClientMessage,
   WSServerMessage,
@@ -19,6 +20,8 @@ interface StreamingMessage {
   content: string;
 }
 
+type ViewMode = "agents" | "ide-monitor" | "code-editor";
+
 interface AppState {
   // Connection
   connected: boolean;
@@ -28,12 +31,16 @@ interface AppState {
   session: Session | null;
   activeAgentId: string | null;
 
+  // Antigravity IDE state
+  ideState: AntigravityIDEState | null;
+
   // Streaming
   streamingMessages: Map<string, StreamingMessage>;
 
   // UI
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
+  viewMode: ViewMode;
 
   // Actions
   connect: () => void;
@@ -45,6 +52,12 @@ interface AppState {
   setActiveAgent: (agentId: string | null) => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
+  setViewMode: (mode: ViewMode) => void;
+
+  // IDE actions
+  ideSendMessage: (content: string) => void;
+  ideStopGeneration: () => void;
+  ideRequestState: () => void;
 }
 
 const WS_URL =
@@ -57,9 +70,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   ws: null,
   session: null,
   activeAgentId: null,
+  ideState: null,
   streamingMessages: new Map(),
   sidebarOpen: false,
   agentPanelOpen: false,
+  viewMode: "agents",
 
   connect: () => {
     const ws = new WebSocket(WS_URL);
@@ -154,6 +169,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           break;
         }
 
+        case "ide_state":
+          set({ ideState: msg.state });
+          break;
+
         case "error":
           console.error("Server error:", msg.error);
           break;
@@ -189,4 +208,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveAgent: (agentId) => set({ activeAgentId: agentId }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
+  setViewMode: (mode) => set({ viewMode: mode }),
+
+  // Antigravity IDE actions
+  ideSendMessage: (content) => {
+    const msg: WSClientMessage = { type: "ide_send_message", content };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  ideStopGeneration: () => {
+    const msg: WSClientMessage = { type: "ide_stop_generation" };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  ideRequestState: () => {
+    const msg: WSClientMessage = { type: "ide_request_state" };
+    get().ws?.send(JSON.stringify(msg));
+  },
 }));

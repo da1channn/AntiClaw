@@ -78,11 +78,34 @@ export interface Session {
 
 // --- WebSocket Messages ---
 
+// --- Antigravity IDE State (CDP Bridge) ---
+
+export interface AntigravityChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  model?: string;
+  timestamp: number;
+}
+
+export interface AntigravityIDEState {
+  connected: boolean;
+  activeModel: string | null;
+  activeMode: string | null;      // "fast" | "planning" | "agent"
+  messages: AntigravityChatMessage[];
+  isGenerating: boolean;
+  agentCount: number;
+}
+
+// --- WebSocket Messages (Antigravity IDE) ---
+
 export type WSClientMessage =
   | { type: "send_message"; agentId: string; content: string }
   | { type: "create_agent"; role: AgentRole; model?: string }
   | { type: "stop_agent"; agentId: string }
-  | { type: "delete_agent"; agentId: string };
+  | { type: "delete_agent"; agentId: string }
+  | { type: "ide_send_message"; content: string }
+  | { type: "ide_stop_generation" }
+  | { type: "ide_request_state" };
 
 export type WSServerMessage =
   | { type: "agent_created"; agent: Agent }
@@ -92,7 +115,8 @@ export type WSServerMessage =
   | { type: "message_stream"; agentId: string; chunk: string; messageId: string }
   | { type: "message_stream_end"; agentId: string; messageId: string }
   | { type: "error"; error: string; agentId?: string }
-  | { type: "session_sync"; session: Session };
+  | { type: "session_sync"; session: Session }
+  | { type: "ide_state"; state: AntigravityIDEState };
 
 // --- API ---
 

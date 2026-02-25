@@ -3,7 +3,7 @@
 import { useAppStore } from "../lib/store";
 
 export function Header() {
-  const { connected, session, sidebarOpen, toggleSidebar, toggleAgentPanel } = useAppStore();
+  const { connected, session, ideState, sidebarOpen, toggleSidebar, toggleAgentPanel } = useAppStore();
 
   const activeAgents = session?.agents.filter(
     (a) => a.status !== "completed" && a.status !== "error"
@@ -45,6 +45,14 @@ export function Header() {
         <div className="flex items-center gap-1.5 text-xs text-gray-400">
           <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
           {activeAgents} agent{activeAgents !== 1 ? "s" : ""}
+        </div>
+      )}
+
+      {/* IDE connection badge */}
+      {ideState?.connected && (
+        <div className="flex items-center gap-1.5 text-xs text-gray-400">
+          <span className={`w-2 h-2 rounded-full ${ideState.isGenerating ? "bg-yellow-400 animate-pulse" : "bg-green-400"}`} />
+          IDE
         </div>
       )}
 

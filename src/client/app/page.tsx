@@ -10,9 +10,11 @@ import { AgentSidebar } from "../components/AgentSidebar";
 import { ChatView } from "../components/ChatView";
 import { MessageInput } from "../components/MessageInput";
 import { AgentCreator } from "../components/AgentCreator";
+import { IDEMonitor } from "../components/IDEMonitor";
+import { ViewSwitcher } from "../components/ViewSwitcher";
 
 export default function Home() {
-  const { connect, connected, session, sidebarOpen, agentPanelOpen } = useAppStore();
+  const { connect, connected, session, sidebarOpen, agentPanelOpen, viewMode } = useAppStore();
 
   useEffect(() => {
     connect();
@@ -21,6 +23,7 @@ export default function Home() {
   return (
     <div className="h-dvh flex flex-col overflow-hidden safe-top">
       <Header />
+      <ViewSwitcher />
 
       <div className="flex-1 flex overflow-hidden relative">
         {/* Agent sidebar - slides in on mobile */}
@@ -42,9 +45,19 @@ export default function Home() {
           />
         )}
 
-        {/* Main chat area */}
+        {/* Main content area */}
         <div className="flex-1 flex flex-col min-w-0">
-          {session && session.agents.length > 0 ? (
+          {viewMode === "ide-monitor" ? (
+            <IDEMonitor />
+          ) : viewMode === "code-editor" ? (
+            <div className="flex-1 flex items-center justify-center">
+              <iframe
+                src="/code/"
+                className="w-full h-full border-0"
+                title="code-server"
+              />
+            </div>
+          ) : session && session.agents.length > 0 ? (
             <>
               <ChatView />
               <MessageInput />

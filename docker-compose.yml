@@ -1,0 +1,42 @@
+# =============================================================================
+# AntiClaw - Docker Compose
+# =============================================================================
+# Production deployment with Cloudflare Tunnel for SSO-protected access.
+#
+# Usage:
+#   cp .env.example .env  # Configure your values
+#   docker compose up -d
+
+services:
+  anticlaw:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    # Connect to host network to reach Antigravity IDE on localhost:9222
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # code-server for browser-based code editing (optional)
+  code-server:
+    image: codercom/code-server:latest
+    environment:
+      - PASSWORD=""
+    volumes:
+      - ./workspace:/home/coder/project
+    command: ["--bind-addr", "0.0.0.0:8080", "--auth", "none", "/home/coder/project"]
+    restart: unless-stopped
+
+  # Cloudflare Tunnel for secure external access with SSO
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - anticlaw

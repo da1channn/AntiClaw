@@ -3,9 +3,17 @@
 # =============================================================================
 # Production deployment with Cloudflare Tunnel for SSO-protected access.
 #
+# Two modes:
+#   1. Docker mode (default): AntiClaw runs in container, connects to host IDE
+#   2. Host mode: Run AntiClaw directly on host alongside Antigravity IDE
+#
 # Usage:
 #   cp .env.example .env  # Configure your values
 #   docker compose up -d
+#
+# IMPORTANT: Set WORKSPACE_PATH to the same directory Antigravity IDE is using.
+# This ensures code-server edits the same files the IDE is working with.
+#   WORKSPACE_PATH=/home/user/my-project docker compose up -d
 
 services:
   anticlaw:
@@ -17,21 +25,20 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - CODE_SERVER_URL=http://code-server:8080
+      # CDP connects to Antigravity IDE running on the host
       - CDP_HOST=host.docker.internal
-    # Connect to host network to reach Antigravity IDE on localhost:9222
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - code-server
     restart: unless-stopped
 
-  # code-server for browser-based code editing (optional)
+  # code-server for browser-based code editing
+  # Mounts the SAME workspace directory that Antigravity IDE is using
   code-server:
     image: codercom/code-server:latest
-    environment:
-      - PASSWORD=""
     volumes:
-      - ./workspace:/home/coder/project
+      - ${WORKSPACE_PATH:-.}:/home/coder/project
     command: ["--bind-addr", "0.0.0.0:8080", "--auth", "none", "/home/coder/project"]
     restart: unless-stopped
 

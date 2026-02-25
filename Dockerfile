@@ -7,10 +7,15 @@
 FROM node:22-alpine AS base
 WORKDIR /app
 
-# --- Dependencies ---
+# --- Dependencies (all, including devDependencies for build) ---
 FROM base AS deps
 COPY package.json package-lock.json* ./
-RUN npm ci --production=false
+RUN npm ci
+
+# --- Production dependencies only ---
+FROM base AS prod-deps
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm install tsx
 
 # --- Build ---
 FROM base AS builder
@@ -28,9 +33,9 @@ RUN apk add --no-cache curl bash \
   && curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/usr/local \
   || true
 
-# Copy built assets
+# Copy built assets and production dependencies
 COPY --from=builder /app/package.json ./
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/src ./src
 

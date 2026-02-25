@@ -16,9 +16,13 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - CODE_SERVER_URL=http://code-server:8080
+      - CDP_HOST=host.docker.internal
     # Connect to host network to reach Antigravity IDE on localhost:9222
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - code-server
     restart: unless-stopped
 
   # code-server for browser-based code editing (optional)

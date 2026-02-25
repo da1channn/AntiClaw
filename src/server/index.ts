@@ -28,6 +28,9 @@ app.use(express.json());
 // --- Orchestrator ---
 const orchestrator = new AgentOrchestrator();
 
+// Track WebSocket connections per session
+const wsConnections = new Map<string, Set<WebSocket>>();
+
 // --- CDP Bridge (Antigravity IDE connection) ---
 const cdpBridge = new CDPBridge();
 
@@ -50,9 +53,6 @@ cdpBridge.on("state_updated", (state) => {
     }
   }
 });
-
-// Track WebSocket connections per session
-const wsConnections = new Map<string, Set<WebSocket>>();
 
 function broadcastToSession(sessionId: string, message: WSServerMessage): void {
   const connections = wsConnections.get(sessionId);

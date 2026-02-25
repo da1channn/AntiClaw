@@ -283,6 +283,7 @@ export class CDPBridge extends EventEmitter {
       if (typeof state === "string") {
         const parsed = JSON.parse(state);
         const oldMsgCount = this.state.messages.length;
+        const oldIsGenerating = this.state.isGenerating;
 
         this.state.messages = parsed.messages;
         this.state.activeModel = parsed.activeModel;
@@ -293,7 +294,7 @@ export class CDPBridge extends EventEmitter {
         if (parsed.messages.length !== oldMsgCount) {
           this.emit("messages_updated", this.state);
         }
-        if (parsed.isGenerating !== this.state.isGenerating) {
+        if (parsed.isGenerating !== oldIsGenerating) {
           this.emit("generation_status", parsed.isGenerating);
         }
 

@@ -76,8 +76,6 @@ export interface Session {
   workspacePath?: string;
 }
 
-// --- WebSocket Messages ---
-
 // --- Antigravity IDE State (CDP Bridge) ---
 
 export interface AntigravityChatMessage {

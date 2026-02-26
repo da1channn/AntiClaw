@@ -14,7 +14,7 @@ export function Header() {
       {/* Hamburger menu - mobile only */}
       <button
         onClick={toggleSidebar}
-        className="md:hidden p-1.5 rounded-lg hover:bg-gray-800 active:bg-gray-700 transition-colors"
+        className="md:hidden p-2.5 -m-1 rounded-lg hover:bg-gray-800 active:bg-gray-700 transition-colors"
         aria-label="Toggle sidebar"
       >
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -59,7 +59,7 @@ export function Header() {
       {/* Add agent button - mobile */}
       <button
         onClick={toggleAgentPanel}
-        className="md:hidden p-1.5 rounded-lg hover:bg-gray-800 active:bg-gray-700 transition-colors"
+        className="md:hidden p-2.5 -m-1 rounded-lg hover:bg-gray-800 active:bg-gray-700 transition-colors"
         aria-label="Add agent"
       >
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

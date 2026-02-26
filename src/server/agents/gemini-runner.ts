@@ -13,6 +13,8 @@ const GEMINI_CLI_PATH = process.env.GEMINI_CLI_PATH || "gemini";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const AGENT_TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT_MS || "300000", 10);
+const MAX_PROMPT_LENGTH = 50000; // ~50KB max prompt to prevent abuse
+const MAX_CONVERSATION_HISTORY = 20;
 
 /** System prompts per agent role */
 const ROLE_PROMPTS: Record<AgentRole, string> = {
@@ -46,7 +48,15 @@ export class GeminiRunner extends EventEmitter {
    * Execute a prompt via Gemini CLI in headless mode with streaming output.
    */
   async execute(prompt: string): Promise<string> {
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      throw new Error(`Prompt too long (${prompt.length} chars, max ${MAX_PROMPT_LENGTH})`);
+    }
+
     this.conversationHistory.push({ role: "user", content: prompt });
+    // Cap conversation history to prevent unbounded memory growth
+    if (this.conversationHistory.length > MAX_CONVERSATION_HISTORY) {
+      this.conversationHistory = this.conversationHistory.slice(-MAX_CONVERSATION_HISTORY);
+    }
 
     const systemPrompt = ROLE_PROMPTS[this.role];
     const contextPrompt = this.buildContextPrompt(systemPrompt, prompt);
@@ -57,9 +67,10 @@ export class GeminiRunner extends EventEmitter {
         "--model", this.model,
       ];
 
-      // Set API key in environment
-      const env = {
-        ...process.env,
+      // Only pass required env vars to child process (avoid leaking secrets)
+      const env: Record<string, string> = {
+        PATH: process.env.PATH || "",
+        HOME: process.env.HOME || "",
         GEMINI_API_KEY: GEMINI_API_KEY,
         GOOGLE_API_KEY: GEMINI_API_KEY,
       };

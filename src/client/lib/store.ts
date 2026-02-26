@@ -244,16 +244,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
           break;
 
-        case "message":
+        case "message": {
           if (state.session) {
+            const msgs = [...state.session.messages, msg.message];
             set({
               session: {
                 ...state.session,
-                messages: [...state.session.messages, msg.message],
+                messages: msgs.length > 500 ? msgs.slice(-500) : msgs,
               },
             });
           }
           break;
+        }
 
         case "message_stream": {
           const streaming = new Map(state.streamingMessages);

@@ -19,6 +19,8 @@ import type {
 const MAX_CONCURRENT_AGENTS = parseInt(process.env.MAX_CONCURRENT_AGENTS || "4", 10);
 const ALLOWED_MODELS = (process.env.ALLOWED_MODELS || "gemini-3-pro,gemini-3-flash,gemini-2.5-pro").split(",").map((m) => m.trim());
 const VALID_ROLES = new Set<string>(["architect", "frontend", "backend", "tester", "reviewer", "devops", "general"]);
+const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS || "86400000", 10); // 24h
+const MAX_MESSAGES_PER_SESSION = 200;
 
 interface AgentInstance {
   agent: Agent;
@@ -62,6 +64,31 @@ export class AgentOrchestrator {
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Remove stale sessions (no activity within SESSION_TTL_MS).
+   * Should be called periodically from the server.
+   */
+  cleanupStaleSessions(): number {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    let cleaned = 0;
+    for (const [id, session] of this.sessions) {
+      if (session.updatedAt < cutoff) {
+        // Stop and remove all agents in this session
+        for (const agent of session.agents) {
+          const instance = this.agentInstances.get(agent.id);
+          if (instance) {
+            instance.runner.stop();
+            instance.runner.removeAllListeners();
+            this.agentInstances.delete(agent.id);
+          }
+        }
+        this.sessions.delete(id);
+        cleaned++;
+      }
+    }
+    return cleaned;
   }
 
   /**
@@ -135,6 +162,10 @@ export class AgentOrchestrator {
       timestamp: Date.now(),
     };
     session.messages.push(userMessage);
+    // Cap message history to prevent unbounded memory growth
+    if (session.messages.length > MAX_MESSAGES_PER_SESSION) {
+      session.messages = session.messages.slice(-MAX_MESSAGES_PER_SESSION);
+    }
     this.onMessage?.(sessionId, userMessage);
 
     // Update agent status
@@ -202,6 +233,7 @@ export class AgentOrchestrator {
 
     if (instance) {
       instance.runner.stop();
+      instance.runner.removeAllListeners();
       this.agentInstances.delete(agentId);
     }
 

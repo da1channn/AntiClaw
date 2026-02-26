@@ -18,7 +18,12 @@ import type { CommitRequest, CommitFile, CommitResult, GitStatus } from "../../s
 const WORKSPACE_PATH = process.env.WORKSPACE_PATH || process.cwd();
 const ALLOWED_BRANCHES = (process.env.ALLOWED_BRANCHES || "main,master,develop,feature/*").split(",").map((b) => b.trim());
 const APPROVAL_TTL_MS = parseInt(process.env.APPROVAL_TTL_MS || "600000", 10); // 10 min
-const HMAC_SECRET = process.env.HMAC_SECRET || randomBytes(32).toString("hex");
+const HMAC_SECRET = process.env.HMAC_SECRET || (() => {
+  if (process.env.NODE_ENV === "production") {
+    console.warn("[SECURITY] HMAC_SECRET not set. Tokens will not survive server restart. Set HMAC_SECRET in production.");
+  }
+  return randomBytes(32).toString("hex");
+})();
 const MAX_COMMITS_PER_HOUR = parseInt(process.env.MAX_COMMITS_PER_HOUR || "20", 10);
 
 interface AuditEntry {
@@ -39,6 +44,7 @@ interface RateLimitEntry {
 export class GitBridge {
   private auditLog: AuditEntry[] = [];
   private rateLimits = new Map<string, RateLimitEntry>();
+  private usedTokens = new Set<string>();
 
   /**
    * Generate an HMAC-signed approval token for a commit request.
@@ -57,6 +63,9 @@ export class GitBridge {
    * Verify an approval token. Uses timing-safe comparison to prevent timing attacks.
    */
   verifyApprovalToken(token: string, pipelineId: string): boolean {
+    // Prevent token reuse
+    if (this.usedTokens.has(token)) return false;
+
     const parts = token.split(":");
     if (parts.length !== 4) return false;
 
@@ -74,7 +83,15 @@ export class GitBridge {
     const expectedHmac = createHmac("sha256", HMAC_SECRET).update(payload).digest("hex");
 
     try {
-      return timingSafeEqual(Buffer.from(providedHmac, "hex"), Buffer.from(expectedHmac, "hex"));
+      const valid = timingSafeEqual(Buffer.from(providedHmac, "hex"), Buffer.from(expectedHmac, "hex"));
+      if (valid) {
+        this.usedTokens.add(token);
+        // Clean up expired tokens to prevent unbounded growth
+        if (this.usedTokens.size > 1000) {
+          this.usedTokens.clear();
+        }
+      }
+      return valid;
     } catch {
       return false;
     }
@@ -138,6 +155,12 @@ export class GitBridge {
    */
   checkRateLimit(userEmail: string): boolean {
     const now = Date.now();
+
+    // Clean up expired windows to prevent unbounded Map growth
+    for (const [key, val] of this.rateLimits) {
+      if (now - val.windowStart > 3600_000) this.rateLimits.delete(key);
+    }
+
     const entry = this.rateLimits.get(userEmail);
 
     if (!entry || now - entry.windowStart > 3600_000) {

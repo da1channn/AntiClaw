@@ -44,14 +44,22 @@ const wsConnections = new Map<string, Set<WebSocket>>();
 // Track active pipelines per session (for commit approval flow)
 const activePipelines = new Map<string, TeamPipeline>();
 
-// Periodic cleanup of stale pipelines (older than 1 hour)
+// Per-session WebSocket message rate limiting (max 60 messages/minute)
+const wsRateLimits = new Map<string, number[]>();
+const WS_RATE_LIMIT = 60;
+const WS_RATE_WINDOW_MS = 60_000;
+
+// Periodic cleanup of stale pipelines (older than 1 hour) and sessions
 setInterval(() => {
   const cutoff = Date.now() - 3600_000;
   for (const [id, pipeline] of activePipelines) {
     if (pipeline.updatedAt < cutoff) {
+      teamOrchestrator.cancelPipeline(id);
       activePipelines.delete(id);
     }
   }
+  const cleaned = orchestrator.cleanupStaleSessions();
+  if (cleaned > 0) console.log(`[CLEANUP] Removed ${cleaned} stale session(s)`);
 }, 600_000); // Every 10 min
 
 // --- CDP Bridge (Antigravity IDE connection) ---
@@ -70,21 +78,25 @@ cdpBridge.on("state_updated", (state) => {
   const data = JSON.stringify(msg);
   for (const connectionSet of wsConnections.values()) {
     for (const ws of connectionSet) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
+      safeSend(ws, data);
     }
   }
 });
+
+function safeSend(ws: WebSocket, data: string): void {
+  try {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  } catch {
+    // Connection may have closed between readyState check and send
+  }
+}
 
 function broadcastToSession(sessionId: string, message: WSServerMessage): void {
   const connections = wsConnections.get(sessionId);
   if (!connections) return;
   const data = JSON.stringify(message);
   for (const ws of connections) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-    }
+    safeSend(ws, data);
   }
 }
 
@@ -378,10 +390,24 @@ wss.on("connection", async (ws, req) => {
   // Handle incoming messages
   ws.on("message", async (data) => {
     try {
+      // Rate limit check
+      const now = Date.now();
+      const timestamps = wsRateLimits.get(session.id) || [];
+      const recent = timestamps.filter((t) => now - t < WS_RATE_WINDOW_MS);
+      if (recent.length >= WS_RATE_LIMIT) {
+        ws.send(JSON.stringify({ type: "error", error: "Rate limit exceeded. Please slow down." } satisfies WSServerMessage));
+        return;
+      }
+      recent.push(now);
+      wsRateLimits.set(session.id, recent);
+
       const msg: WSClientMessage = JSON.parse(data.toString());
 
       switch (msg.type) {
         case "send_message":
+          if (!msg.agentId || typeof msg.content !== "string" || msg.content.length === 0 || msg.content.length > 10000) {
+            throw new Error("Invalid message: agentId required, content must be 1-10000 chars");
+          }
           await orchestrator.sendMessage(session.id, msg.agentId, msg.content);
           break;
 
@@ -412,6 +438,9 @@ wss.on("connection", async (ws, req) => {
 
         // Bed-to-Commit Bridge commands
         case "pipeline_start":
+          if (!msg.task || typeof msg.task !== "string" || msg.task.length === 0 || msg.task.length > 5000) {
+            throw new Error("Invalid task: must be 1-5000 chars");
+          }
           await teamOrchestrator.startPipeline(session.id, msg.task, msg.model);
           break;
 
@@ -493,9 +522,50 @@ wss.on("connection", async (ws, req) => {
     wsConnections.get(session.id)?.delete(ws);
     if (wsConnections.get(session.id)?.size === 0) {
       wsConnections.delete(session.id);
+      wsRateLimits.delete(session.id);
     }
   });
 });
+
+// --- Graceful Shutdown ---
+function shutdown(signal: string): void {
+  console.log(`\n[SHUTDOWN] ${signal} received. Cleaning up...`);
+
+  // 1. Stop accepting new connections
+  wss.close();
+
+  // 2. Close all WebSocket connections
+  for (const connectionSet of wsConnections.values()) {
+    for (const ws of connectionSet) {
+      ws.close(1001, "Server shutting down");
+    }
+  }
+  wsConnections.clear();
+
+  // 3. Cancel all active pipelines
+  for (const [id] of activePipelines) {
+    teamOrchestrator.cancelPipeline(id);
+  }
+  activePipelines.clear();
+
+  // 4. Disconnect CDP bridge
+  cdpBridge.disconnect();
+
+  // 5. Close HTTP server
+  server.close(() => {
+    console.log("[SHUTDOWN] Server closed.");
+    process.exit(0);
+  });
+
+  // Force exit after 5s if cleanup hangs
+  setTimeout(() => {
+    console.error("[SHUTDOWN] Forced exit after timeout.");
+    process.exit(1);
+  }, 5000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // --- Start Server ---
 server.listen(PORT, () => {

@@ -68,7 +68,7 @@ function AgentCard({ agent }: { agent: Agent }) {
           {agent.status === "executing" && (
             <button
               onClick={(e) => { e.stopPropagation(); stopAgent(agent.id); }}
-              className="p-2 rounded hover:bg-gray-700 text-yellow-400"
+              className="p-2.5 -m-0.5 rounded hover:bg-gray-700 text-yellow-400"
               aria-label={`${agent.name}を停止`}
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -81,7 +81,7 @@ function AgentCard({ agent }: { agent: Agent }) {
               e.stopPropagation();
               if (confirm(`${agent.name}を削除しますか？`)) deleteAgent(agent.id);
             }}
-            className="p-2 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"
+            className="p-2.5 -m-0.5 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"
             aria-label={`${agent.name}を削除`}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

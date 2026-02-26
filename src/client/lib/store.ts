@@ -115,14 +115,41 @@ function sendNotification(title: string, body: string): void {
   new Notification(title, { body, icon: "/icon-192.svg" });
 }
 
-/** Safely send a message over WebSocket. No-op if not connected. */
+// Offline message queue - drained on reconnect
+const offlineQueue: WSClientMessage[] = [];
+const MAX_OFFLINE_QUEUE = 50;
+
+/** Safely send a message over WebSocket. Queues if offline. */
 function safeSend(get: () => AppState, msg: WSClientMessage): void {
   const ws = get().ws;
   if (ws && ws.readyState === WebSocket.OPEN) {
     try {
       ws.send(JSON.stringify(msg));
     } catch {
-      console.warn("[WS] Send failed, connection may be closing");
+      console.warn("[WS] Send failed, queuing message");
+      queueOfflineMessage(msg);
+    }
+  } else {
+    queueOfflineMessage(msg);
+  }
+}
+
+function queueOfflineMessage(msg: WSClientMessage): void {
+  // Only queue user-initiated actions (not heartbeats/status requests)
+  if (msg.type === "git_status_request" || msg.type === "ide_request_state") return;
+  if (offlineQueue.length < MAX_OFFLINE_QUEUE) {
+    offlineQueue.push(msg);
+  }
+}
+
+function drainOfflineQueue(ws: WebSocket): void {
+  while (offlineQueue.length > 0) {
+    const msg = offlineQueue.shift()!;
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      offlineQueue.unshift(msg);
+      break;
     }
   }
 }
@@ -159,6 +186,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       reconnectAttempt = 0;
       set({ connected: true, ws });
       requestNotificationPermission();
+      drainOfflineQueue(ws);
 
       // Start heartbeat (ping every 25s to keep connection alive through NAT/firewalls)
       if (heartbeatTimer) clearInterval(heartbeatTimer);

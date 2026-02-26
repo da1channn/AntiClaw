@@ -29,7 +29,19 @@ if (process.env.CF_POLICY_BYPASS === "true" && process.env.NODE_ENV === "product
 }
 
 // --- Middleware ---
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "ws:", "wss:"],
+      fontSrc: ["'self'"],
+      workerSrc: ["'self'"],
+    },
+  },
+}));
 app.use(cors());
 app.use(express.json({ limit: "64kb" }));
 
@@ -344,8 +356,11 @@ app.get("/api/git/audit", (_req, res) => {
 });
 
 // --- code-server Proxy ---
-// Mount code-server proxy (protected by the same Cloudflare Access SSO)
-app.use("/code", requireAuth, createCodeServerProxy());
+// Mount code-server proxy with relaxed CSP (code-server needs its own scripts)
+app.use("/code", requireAuth, (_req, res, next) => {
+  res.removeHeader("Content-Security-Policy");
+  next();
+}, createCodeServerProxy());
 
 // --- WebSocket ---
 

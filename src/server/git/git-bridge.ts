@@ -11,6 +11,7 @@
 
 import { execFile } from "child_process";
 import { randomBytes, createHmac, timingSafeEqual } from "crypto";
+import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import type { CommitRequest, CommitFile, CommitResult, GitStatus } from "../../shared/types.js";
 
@@ -190,6 +191,27 @@ export class GitBridge {
   }
 
   /**
+   * Write files to disk for diff preview (before commit approval).
+   * Does NOT stage them - just writes so we can show a diff.
+   */
+  async writeFilesForPreview(files: CommitFile[]): Promise<void> {
+    await this.writeFiles(files);
+  }
+
+  /**
+   * Get a diff of unstaged changes for preview.
+   */
+  async getPreviewDiff(files: CommitFile[]): Promise<string> {
+    const paths = files.filter((f) => f.content).map((f) => f.path);
+    if (paths.length === 0) return "(no changes)";
+    try {
+      return await this.git(["diff", "--", ...paths]);
+    } catch {
+      return await this.git(["diff", "--stat"]).catch(() => "(diff unavailable)");
+    }
+  }
+
+  /**
    * Generate a diff for staged changes.
    */
   async getDiff(): Promise<string> {
@@ -240,9 +262,14 @@ export class GitBridge {
     const sanitizedMessage = this.sanitizeCommitMessage(request.message);
 
     try {
+      // Write file contents to disk (critical: without this, git add operates on stale/missing files)
+      await this.writeFiles(request.files);
+
       // Stage files
-      const filePaths = request.files.map((f) => f.path);
-      await this.git(["add", ...filePaths]);
+      const filePaths = request.files.filter((f) => f.action !== "delete").map((f) => f.path);
+      const deletedPaths = request.files.filter((f) => f.action === "delete").map((f) => f.path);
+      if (filePaths.length > 0) await this.git(["add", ...filePaths]);
+      if (deletedPaths.length > 0) await this.git(["rm", ...deletedPaths]);
 
       // Create commit
       await this.git(["commit", "-m", sanitizedMessage, "--author", `AntiClaw <anticlaw@${userEmail}>`]);
@@ -300,6 +327,26 @@ export class GitBridge {
    */
   getAuditLog(): AuditEntry[] {
     return this.auditLog.slice(-100);
+  }
+
+  /**
+   * Write file contents to disk before staging.
+   * Only writes files that have content (AI-generated).
+   * Creates parent directories as needed.
+   */
+  private async writeFiles(files: CommitFile[]): Promise<void> {
+    for (const file of files) {
+      if (file.action === "delete" || !file.content) continue;
+
+      const fullPath = path.join(WORKSPACE_PATH, file.path);
+      const dir = path.dirname(fullPath);
+
+      // Ensure parent directory exists
+      await mkdir(dir, { recursive: true });
+
+      // Write file content
+      await writeFile(fullPath, file.content, "utf-8");
+    }
   }
 
   /**

@@ -45,6 +45,7 @@ interface AppState {
   pipelineStageStreams: Map<string, string>;
   gitStatus: GitStatus | null;
   lastCommitResult: CommitResult | null;
+  diffPreview: string | null;
 
   // UI
   sidebarOpen: boolean;
@@ -74,12 +75,38 @@ interface AppState {
   approveCommit: (pipelineId: string, approvalToken: string, message?: string, push?: boolean) => void;
   rejectCommit: (pipelineId: string) => void;
   requestGitStatus: () => void;
+  requestDiff: (pipelineId: string) => void;
 }
 
 const WS_URL =
   typeof window !== "undefined"
     ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`
     : "";
+
+// Reconnect state (outside store to avoid triggering renders)
+let reconnectAttempt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function getReconnectDelay(): number {
+  const base = Math.min(1000 * Math.pow(2, reconnectAttempt), 30000); // Max 30s
+  const jitter = Math.random() * 1000;
+  return base + jitter;
+}
+
+/** Request notification permission once. */
+function requestNotificationPermission(): void {
+  if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function sendNotification(title: string, body: string): void {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  if (document.hasFocus()) return; // Don't notify if app is focused
+  new Notification(title, { body, icon: "/icon-192.svg" });
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
@@ -92,21 +119,43 @@ export const useAppStore = create<AppState>((set, get) => ({
   pipelineStageStreams: new Map(),
   gitStatus: null,
   lastCommitResult: null,
+  diffPreview: null,
   sidebarOpen: false,
   agentPanelOpen: false,
   viewMode: "agents",
 
   connect: () => {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
+      reconnectAttempt = 0;
       set({ connected: true, ws });
+      requestNotificationPermission();
+
+      // Start heartbeat (ping every 25s to keep connection alive through NAT/firewalls)
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "git_status_request" }));
+        }
+      }, 25000);
+
+      // Listen for online event to trigger immediate reconnect
+      const onOnline = () => {
+        if (!get().connected) get().connect();
+      };
+      window.addEventListener("online", onOnline, { once: true });
     };
 
     ws.onclose = () => {
       set({ connected: false, ws: null });
-      // Auto-reconnect after 3s
-      setTimeout(() => get().connect(), 3000);
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      // Exponential backoff reconnect with jitter
+      const delay = getReconnectDelay();
+      reconnectAttempt++;
+      reconnectTimer = setTimeout(() => get().connect(), delay);
     };
 
     ws.onmessage = (event) => {
@@ -206,11 +255,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
 
         case "commit_ready":
-          set({ activePipeline: msg.pipeline });
+          set({ activePipeline: msg.pipeline, diffPreview: msg.pipeline.diff || null });
+          sendNotification("AntiClaw", "\u30D1\u30A4\u30D7\u30E9\u30A4\u30F3\u5B8C\u4E86 - \u30B3\u30DF\u30C3\u30C8\u627F\u8A8D\u5F85\u3061");
           break;
 
         case "commit_result":
           set({ lastCommitResult: msg.result });
+          sendNotification("AntiClaw", `\u30B3\u30DF\u30C3\u30C8\u5B8C\u4E86: ${msg.result.hash.slice(0, 8)}`);
+          break;
+
+        case "diff_response":
+          set({ diffPreview: msg.diff });
           break;
 
         case "git_status":
@@ -273,7 +328,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Pipeline actions (Bed-to-Commit Bridge)
   startPipeline: (task, model) => {
     const msg: WSClientMessage = { type: "pipeline_start", task, model };
-    set({ activePipeline: null, pipelineStageStreams: new Map(), lastCommitResult: null });
+    set({ activePipeline: null, pipelineStageStreams: new Map(), lastCommitResult: null, diffPreview: null });
     get().ws?.send(JSON.stringify(msg));
   },
 
@@ -294,6 +349,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   requestGitStatus: () => {
     const msg: WSClientMessage = { type: "git_status_request" };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  requestDiff: (pipelineId) => {
+    const msg: WSClientMessage = { type: "diff_request", pipelineId };
     get().ws?.send(JSON.stringify(msg));
   },
 }));

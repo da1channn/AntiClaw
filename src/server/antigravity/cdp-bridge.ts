@@ -83,6 +83,9 @@ export class CDPBridge extends EventEmitter {
   private cmdId = 0;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pendingCommands = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private destroyed = false;
   private state: AntigravityState = {
     connected: false,
     activeModel: null,
@@ -98,10 +101,19 @@ export class CDPBridge extends EventEmitter {
 
   /**
    * Connect to Antigravity IDE via CDP.
+   * Uses exponential backoff for reconnection attempts.
    */
   async connect(): Promise<void> {
+    if (this.destroyed) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+
     const wsUrl = await findAntigravityTarget();
     if (!wsUrl) {
+      // Schedule retry with backoff instead of throwing immediately on reconnect
+      if (this.reconnectAttempt > 0) {
+        this.scheduleReconnect();
+        return;
+      }
       throw new Error(
         `Cannot connect to Antigravity IDE. Ensure it is running with: antigravity . --remote-debugging-port=${CDP_PORT}`
       );
@@ -111,6 +123,7 @@ export class CDPBridge extends EventEmitter {
       this.ws = new WebSocket(wsUrl);
 
       this.ws.on("open", () => {
+        this.reconnectAttempt = 0; // Reset backoff on successful connection
         this.state.connected = true;
         this.emit("connected");
         this.enableDOMEvents();
@@ -137,24 +150,47 @@ export class CDPBridge extends EventEmitter {
           if (msg.method) {
             this.handleCDPEvent(msg.method, msg.params);
           }
-        } catch {
-          // Ignore parse errors
+        } catch (err) {
+          console.warn("[CDP] Failed to parse message:", err);
         }
       });
 
       this.ws.on("close", () => {
         this.state.connected = false;
         this.stopPolling();
+        this.rejectPendingCommands("CDP connection closed");
         this.emit("disconnected");
-        // Auto-reconnect after 5s
-        setTimeout(() => this.connect().catch(() => {}), 5000);
+        this.scheduleReconnect();
       });
 
       this.ws.on("error", (err) => {
+        console.warn("[CDP] WebSocket error:", err.message);
         if (!this.state.connected) reject(err);
         this.emit("error", err);
       });
     });
+  }
+
+  /**
+   * Schedule a reconnect attempt with exponential backoff (max 60s).
+   */
+  private scheduleReconnect(): void {
+    if (this.destroyed) return;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 60000);
+    const jitter = Math.random() * 2000;
+    this.reconnectAttempt++;
+    console.log(`[CDP] Reconnecting in ${Math.round((delay + jitter) / 1000)}s (attempt ${this.reconnectAttempt})`);
+    this.reconnectTimer = setTimeout(() => this.connect().catch(() => {}), delay + jitter);
+  }
+
+  /**
+   * Reject all pending CDP commands (called on disconnect).
+   */
+  private rejectPendingCommands(reason: string): void {
+    for (const [id, pending] of this.pendingCommands) {
+      pending.reject(new Error(reason));
+      this.pendingCommands.delete(id);
+    }
   }
 
   /**
@@ -300,13 +336,21 @@ export class CDPBridge extends EventEmitter {
 
         this.emit("state_updated", this.getState());
       }
-    } catch {
-      // Poll failures are expected when IDE is loading
+    } catch (err) {
+      // Poll failures are expected when IDE is loading or selectors change
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("CDP not connected")) {
+        console.debug("[CDP] Poll failed:", msg);
+      }
     }
   }
 
-  private handleCDPEvent(_method: string, _params: unknown): void {
-    // Handle real-time DOM mutation events if needed
+  private handleCDPEvent(method: string, params: unknown): void {
+    // Forward DOM mutation events for real-time monitoring
+    if (method === "DOM.documentUpdated") {
+      // Re-enable DOM tracking after navigation
+      this.enableDOMEvents().catch(() => {});
+    }
   }
 
   /**
@@ -353,10 +397,13 @@ export class CDPBridge extends EventEmitter {
   }
 
   /**
-   * Disconnect from CDP.
+   * Disconnect from CDP and stop all reconnection attempts.
    */
   disconnect(): void {
+    this.destroyed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.stopPolling();
+    this.rejectPendingCommands("CDP bridge disconnected");
     this.ws?.close();
     this.ws = null;
     this.state.connected = false;

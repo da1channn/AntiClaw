@@ -140,6 +140,7 @@ export interface CommitRequest {
 export interface CommitFile {
   path: string;
   action: "add" | "modify" | "delete";
+  content?: string;
   diff?: string;
 }
 
@@ -178,7 +179,8 @@ export type WSClientMessage =
   | { type: "pipeline_cancel"; pipelineId: string }
   | { type: "commit_approve"; pipelineId: string; approvalToken: string; message?: string; push?: boolean }
   | { type: "commit_reject"; pipelineId: string }
-  | { type: "git_status_request" };
+  | { type: "git_status_request" }
+  | { type: "diff_request"; pipelineId: string };
 
 export type WSServerMessage =
   | { type: "agent_created"; agent: Agent }
@@ -194,7 +196,8 @@ export type WSServerMessage =
   | { type: "pipeline_stage_stream"; pipelineId: string; stageId: string; chunk: string }
   | { type: "commit_ready"; pipeline: TeamPipeline }
   | { type: "commit_result"; pipelineId: string; result: CommitResult }
-  | { type: "git_status"; status: GitStatus };
+  | { type: "git_status"; status: GitStatus }
+  | { type: "diff_response"; pipelineId: string; diff: string };
 
 // --- API ---
 

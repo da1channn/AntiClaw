@@ -112,7 +112,7 @@ teamOrchestrator.onStageStream = (sessionId, pipelineId, stageId, chunk) => {
   broadcastToSession(sessionId, { type: "pipeline_stage_stream", pipelineId, stageId, chunk });
 };
 
-teamOrchestrator.onPipelineComplete = (sessionId, pipeline) => {
+teamOrchestrator.onPipelineComplete = async (sessionId, pipeline) => {
   // Generate approval token and commit request
   const { token, expiresAt } = gitBridge.generateApprovalToken(pipeline.id);
   const files = teamOrchestrator.collectFileChanges(pipeline);
@@ -121,22 +121,31 @@ teamOrchestrator.onPipelineComplete = (sessionId, pipeline) => {
   pipeline.commitRequest = {
     pipelineId: pipeline.id,
     message,
-    branch: "", // Will be filled from git status
-    files: files.map((f) => ({ path: f.path, action: "modify" as const })),
+    branch: "",
+    files: files.map((f) => ({ path: f.path, action: "modify" as const, content: f.content })),
     approvalToken: token,
     expiresAt,
   };
 
+  // Write files to disk so we can generate a real diff preview
+  try {
+    await gitBridge.writeFilesForPreview(pipeline.commitRequest.files);
+    const diff = await gitBridge.getPreviewDiff(pipeline.commitRequest.files);
+    pipeline.diff = diff;
+  } catch {
+    pipeline.diff = "(diff preview unavailable)";
+  }
+
   // Get current branch for commit request
-  gitBridge.getStatus().then((status) => {
-    pipeline.commitRequest!.branch = status.branch;
-    activePipelines.set(pipeline.id, pipeline);
-    broadcastToSession(sessionId, { type: "commit_ready", pipeline });
-  }).catch(() => {
-    pipeline.commitRequest!.branch = "main";
-    activePipelines.set(pipeline.id, pipeline);
-    broadcastToSession(sessionId, { type: "commit_ready", pipeline });
-  });
+  try {
+    const status = await gitBridge.getStatus();
+    pipeline.commitRequest.branch = status.branch;
+  } catch {
+    pipeline.commitRequest.branch = "main";
+  }
+
+  activePipelines.set(pipeline.id, pipeline);
+  broadcastToSession(sessionId, { type: "commit_ready", pipeline });
 };
 
 teamOrchestrator.onError = (sessionId, pipelineId, error) => {
@@ -439,6 +448,21 @@ wss.on("connection", async (ws, req) => {
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : "Failed to get git status";
             ws.send(JSON.stringify({ type: "error", error: errorMsg } satisfies WSServerMessage));
+          }
+          break;
+        }
+
+        case "diff_request": {
+          const diffPipeline = activePipelines.get(msg.pipelineId);
+          if (diffPipeline?.diff) {
+            ws.send(JSON.stringify({ type: "diff_response", pipelineId: msg.pipelineId, diff: diffPipeline.diff } satisfies WSServerMessage));
+          } else if (diffPipeline?.commitRequest) {
+            try {
+              const diff = await gitBridge.getPreviewDiff(diffPipeline.commitRequest.files);
+              ws.send(JSON.stringify({ type: "diff_response", pipelineId: msg.pipelineId, diff } satisfies WSServerMessage));
+            } catch {
+              ws.send(JSON.stringify({ type: "diff_response", pipelineId: msg.pipelineId, diff: "(diff unavailable)" } satisfies WSServerMessage));
+            }
           }
           break;
         }

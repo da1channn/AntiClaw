@@ -159,10 +159,4 @@ export class GeminiRunner extends EventEmitter {
     }
   }
 
-  /**
-   * Reset conversation history.
-   */
-  reset(): void {
-    this.conversationHistory = [];
-  }
 }

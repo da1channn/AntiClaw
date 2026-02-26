@@ -212,20 +212,6 @@ export class GitBridge {
   }
 
   /**
-   * Generate a diff for staged changes.
-   */
-  async getDiff(): Promise<string> {
-    return this.git(["diff", "--cached", "--stat"]);
-  }
-
-  /**
-   * Generate a detailed diff for staged changes.
-   */
-  async getDetailedDiff(): Promise<string> {
-    return this.git(["diff", "--cached"]);
-  }
-
-  /**
    * Execute the commit workflow with full security validation.
    */
   async executeCommit(

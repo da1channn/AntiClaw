@@ -72,8 +72,6 @@ export interface Session {
   messages: AgentMessage[];
   createdAt: number;
   updatedAt: number;
-  projectName?: string;
-  workspacePath?: string;
 }
 
 // --- Antigravity IDE State (CDP Bridge) ---

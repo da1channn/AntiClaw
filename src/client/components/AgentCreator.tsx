@@ -24,8 +24,6 @@ const ROLES: RoleOption[] = [
 const MODELS = [
   { value: "gemini-3-pro", label: "Gemini 3 Pro" },
   { value: "gemini-3-flash", label: "Gemini 3 Flash" },
-  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
 ];
 
 export function AgentCreator({ compact = false }: { compact?: boolean }) {

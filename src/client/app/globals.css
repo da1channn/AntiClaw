@@ -21,16 +21,6 @@
 }
 
 @layer components {
-  /* Agent status indicator */
-  .agent-pulse {
-    @apply relative;
-  }
-  .agent-pulse::before {
-    content: '';
-    @apply absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full;
-    animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
-  }
-
   /* Streaming text cursor */
   .streaming-cursor::after {
     content: '▊';
@@ -48,25 +38,6 @@
     transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
   }
 
-  /* Pipeline stage transition */
-  .stage-card {
-    @apply transition-all duration-300;
-  }
-  .stage-card[data-status="running"] {
-    @apply border-blue-500/30 bg-blue-500/5;
-  }
-  .stage-card[data-status="completed"] {
-    @apply border-green-500/20;
-  }
-  .stage-card[data-status="error"] {
-    @apply border-red-500/30 bg-red-500/5;
-  }
-}
-
-@keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
-  70% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 
 @keyframes slide-down {

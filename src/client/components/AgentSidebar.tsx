@@ -23,13 +23,13 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
 };
 
 const ROLE_ICONS: Record<string, string> = {
-  architect: "&#128736;",
-  frontend: "&#127912;",
-  backend: "&#9881;",
-  tester: "&#128270;",
-  reviewer: "&#128065;",
-  devops: "&#9729;",
-  general: "&#129302;",
+  architect: "\u{1F6E0}\uFE0F",
+  frontend: "\u{1F3A8}",
+  backend: "\u2699\uFE0F",
+  tester: "\u{1F50E}",
+  reviewer: "\u{1F441}\uFE0F",
+  devops: "\u2601\uFE0F",
+  general: "\u{1F916}",
 };
 
 function AgentCard({ agent }: { agent: Agent }) {
@@ -52,10 +52,9 @@ function AgentCard({ agent }: { agent: Agent }) {
       }}
     >
       <div className="flex items-center gap-2.5">
-        <span
-          className="text-lg flex-shrink-0"
-          dangerouslySetInnerHTML={{ __html: ROLE_ICONS[agent.role] || ROLE_ICONS.general }}
-        />
+        <span className="text-lg flex-shrink-0" role="img" aria-label={agent.role}>
+          {ROLE_ICONS[agent.role] || ROLE_ICONS.general}
+        </span>
         <div className="flex-1 min-w-0">
           <div className="font-medium text-sm truncate">{agent.name}</div>
           <div className="flex items-center gap-1.5 mt-0.5">
@@ -69,20 +68,23 @@ function AgentCard({ agent }: { agent: Agent }) {
           {agent.status === "executing" && (
             <button
               onClick={(e) => { e.stopPropagation(); stopAgent(agent.id); }}
-              className="p-1 rounded hover:bg-gray-700 text-yellow-400"
-              title="停止"
+              className="p-2 rounded hover:bg-gray-700 text-yellow-400"
+              aria-label={`${agent.name}を停止`}
             >
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <rect x="6" y="6" width="12" height="12" rx="1" />
               </svg>
             </button>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); deleteAgent(agent.id); }}
-            className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"
-            title="削除"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm(`${agent.name}を削除しますか？`)) deleteAgent(agent.id);
+            }}
+            className="p-2 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"
+            aria-label={`${agent.name}を削除`}
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>

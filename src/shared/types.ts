@@ -95,6 +95,77 @@ export interface AntigravityIDEState {
 }
 
 // --- WebSocket Messages (Antigravity IDE) ---
+// Moved to "WebSocket Messages (Bed-to-Commit Bridge)" section below with extended types
+
+// --- Team Agent Pipeline (Bed-to-Commit Bridge) ---
+
+export type PipelineStageStatus = "pending" | "running" | "completed" | "error" | "skipped";
+
+export interface PipelineStage {
+  id: string;
+  role: AgentRole;
+  status: PipelineStageStatus;
+  agentId?: string;
+  input?: string;
+  output?: string;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export type PipelineStatus = "idle" | "planning" | "executing" | "reviewing" | "awaiting_approval" | "committing" | "completed" | "error";
+
+export interface TeamPipeline {
+  id: string;
+  sessionId: string;
+  task: string;
+  status: PipelineStatus;
+  stages: PipelineStage[];
+  diff?: string;
+  commitRequest?: CommitRequest;
+  commitResult?: CommitResult;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CommitRequest {
+  pipelineId: string;
+  message: string;
+  branch: string;
+  files: CommitFile[];
+  approvalToken: string;
+  expiresAt: number;
+}
+
+export interface CommitFile {
+  path: string;
+  action: "add" | "modify" | "delete";
+  content?: string;
+  diff?: string;
+}
+
+export interface CommitResult {
+  hash: string;
+  branch: string;
+  message: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  timestamp: number;
+  pushed: boolean;
+}
+
+export interface GitStatus {
+  branch: string;
+  clean: boolean;
+  staged: string[];
+  modified: string[];
+  untracked: string[];
+  ahead: number;
+  behind: number;
+}
+
+// --- WebSocket Messages (Bed-to-Commit Bridge) ---
 
 export type WSClientMessage =
   | { type: "send_message"; agentId: string; content: string }
@@ -103,7 +174,13 @@ export type WSClientMessage =
   | { type: "delete_agent"; agentId: string }
   | { type: "ide_send_message"; content: string }
   | { type: "ide_stop_generation" }
-  | { type: "ide_request_state" };
+  | { type: "ide_request_state" }
+  | { type: "pipeline_start"; task: string; model?: string }
+  | { type: "pipeline_cancel"; pipelineId: string }
+  | { type: "commit_approve"; pipelineId: string; approvalToken: string; message?: string; push?: boolean }
+  | { type: "commit_reject"; pipelineId: string }
+  | { type: "git_status_request" }
+  | { type: "diff_request"; pipelineId: string };
 
 export type WSServerMessage =
   | { type: "agent_created"; agent: Agent }
@@ -114,7 +191,13 @@ export type WSServerMessage =
   | { type: "message_stream_end"; agentId: string; messageId: string }
   | { type: "error"; error: string; agentId?: string }
   | { type: "session_sync"; session: Session }
-  | { type: "ide_state"; state: AntigravityIDEState };
+  | { type: "ide_state"; state: AntigravityIDEState }
+  | { type: "pipeline_update"; pipeline: TeamPipeline }
+  | { type: "pipeline_stage_stream"; pipelineId: string; stageId: string; chunk: string }
+  | { type: "commit_ready"; pipeline: TeamPipeline }
+  | { type: "commit_result"; pipelineId: string; result: CommitResult }
+  | { type: "git_status"; status: GitStatus }
+  | { type: "diff_response"; pipelineId: string; diff: string };
 
 // --- API ---
 

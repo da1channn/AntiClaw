@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" fill="none">
+  <rect width="192" height="192" rx="40" fill="#030712"/>
+  <rect x="4" y="4" width="184" height="184" rx="36" stroke="#6366f1" stroke-width="2" fill="none"/>
+  <!-- Claw marks -->
+  <g stroke="#a5b4fc" stroke-width="6" stroke-linecap="round">
+    <path d="M56 52 L76 140"/>
+    <path d="M80 48 L96 140"/>
+    <path d="M104 48 L116 140"/>
+    <path d="M128 52 L136 140"/>
+  </g>
+  <!-- Anti arc -->
+  <path d="M40 96 Q96 24 152 96" stroke="#6366f1" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <!-- Dot -->
+  <circle cx="96" cy="156" r="6" fill="#6366f1"/>
+</svg>

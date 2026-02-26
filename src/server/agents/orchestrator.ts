@@ -17,6 +17,8 @@ import type {
 } from "../../shared/types.js";
 
 const MAX_CONCURRENT_AGENTS = parseInt(process.env.MAX_CONCURRENT_AGENTS || "4", 10);
+const ALLOWED_MODELS = (process.env.ALLOWED_MODELS || "gemini-3-pro,gemini-3-flash,gemini-2.5-pro").split(",").map((m) => m.trim());
+const VALID_ROLES = new Set<string>(["architect", "frontend", "backend", "tester", "reviewer", "devops", "general"]);
 
 interface AgentInstance {
   agent: Agent;
@@ -68,6 +70,16 @@ export class AgentOrchestrator {
   createAgent(sessionId: string, role: AgentRole, model?: string): Agent {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("Session not found");
+
+    // Validate role
+    if (!VALID_ROLES.has(role)) {
+      throw new Error(`Invalid agent role: ${role}`);
+    }
+
+    // Validate model if provided
+    if (model && !ALLOWED_MODELS.includes(model)) {
+      throw new Error(`Model not allowed: ${model}. Allowed: ${ALLOWED_MODELS.join(", ")}`);
+    }
 
     const activeAgents = session.agents.filter(
       (a) => a.status !== "completed" && a.status !== "error"

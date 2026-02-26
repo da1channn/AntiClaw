@@ -9,7 +9,10 @@ import type {
   AgentMessage,
   AgentRole,
   AntigravityIDEState,
+  CommitResult,
+  GitStatus,
   Session,
+  TeamPipeline,
   WSClientMessage,
   WSServerMessage,
 } from "../../shared/types";
@@ -20,7 +23,7 @@ interface StreamingMessage {
   content: string;
 }
 
-type ViewMode = "agents" | "ide-monitor" | "code-editor";
+type ViewMode = "agents" | "ide-monitor" | "code-editor" | "commit-bridge";
 
 interface AppState {
   // Connection
@@ -36,6 +39,17 @@ interface AppState {
 
   // Streaming
   streamingMessages: Map<string, StreamingMessage>;
+
+  // Pipeline & Git (Bed-to-Commit Bridge)
+  activePipeline: TeamPipeline | null;
+  pipelineStageStreams: Map<string, string>;
+  gitStatus: GitStatus | null;
+  lastCommitResult: CommitResult | null;
+  diffPreview: string | null;
+
+  // Error state (visible to UI)
+  lastError: string | null;
+  lastErrorAt: number | null;
 
   // UI
   sidebarOpen: boolean;
@@ -58,12 +72,60 @@ interface AppState {
   ideSendMessage: (content: string) => void;
   ideStopGeneration: () => void;
   ideRequestState: () => void;
+
+  // Pipeline actions
+  startPipeline: (task: string, model?: string) => void;
+  cancelPipeline: (pipelineId: string) => void;
+  approveCommit: (pipelineId: string, approvalToken: string, message?: string, push?: boolean) => void;
+  rejectCommit: (pipelineId: string) => void;
+  requestGitStatus: () => void;
+  requestDiff: (pipelineId: string) => void;
+
+  // Error actions
+  clearError: () => void;
 }
 
 const WS_URL =
   typeof window !== "undefined"
     ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`
     : "";
+
+// Reconnect state (outside store to avoid triggering renders)
+let reconnectAttempt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function getReconnectDelay(): number {
+  const base = Math.min(1000 * Math.pow(2, reconnectAttempt), 30000); // Max 30s
+  const jitter = Math.random() * 1000;
+  return base + jitter;
+}
+
+/** Request notification permission once. */
+function requestNotificationPermission(): void {
+  if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function sendNotification(title: string, body: string): void {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  if (document.hasFocus()) return; // Don't notify if app is focused
+  new Notification(title, { body, icon: "/icon-192.svg" });
+}
+
+/** Safely send a message over WebSocket. No-op if not connected. */
+function safeSend(get: () => AppState, msg: WSClientMessage): void {
+  const ws = get().ws;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      console.warn("[WS] Send failed, connection may be closing");
+    }
+  }
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
@@ -72,25 +134,68 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeAgentId: null,
   ideState: null,
   streamingMessages: new Map(),
+  activePipeline: null,
+  pipelineStageStreams: new Map(),
+  gitStatus: null,
+  lastCommitResult: null,
+  diffPreview: null,
+  lastError: null,
+  lastErrorAt: null,
   sidebarOpen: false,
   agentPanelOpen: false,
   viewMode: "agents",
 
   connect: () => {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    // Prevent duplicate connections
+    const existing = get().ws;
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
+      reconnectAttempt = 0;
       set({ connected: true, ws });
+      requestNotificationPermission();
+
+      // Start heartbeat (ping every 25s to keep connection alive through NAT/firewalls)
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "git_status_request" })); } catch { /* ignore */ }
+        }
+      }, 25000);
+
+      // Listen for online event to trigger immediate reconnect
+      window.addEventListener("online", () => {
+        if (!get().connected) get().connect();
+      }, { once: true });
+    };
+
+    ws.onerror = () => {
+      // Error followed by close — handled in onclose
+      console.warn("[WS] Connection error");
     };
 
     ws.onclose = () => {
       set({ connected: false, ws: null });
-      // Auto-reconnect after 3s
-      setTimeout(() => get().connect(), 3000);
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      // Exponential backoff reconnect with jitter
+      const delay = getReconnectDelay();
+      reconnectAttempt++;
+      reconnectTimer = setTimeout(() => get().connect(), delay);
     };
 
     ws.onmessage = (event) => {
-      const msg: WSServerMessage = JSON.parse(event.data);
+      let msg: WSServerMessage;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        console.warn("[WS] Failed to parse message:", event.data);
+        return;
+      }
       const state = get();
 
       switch (msg.type) {
@@ -173,8 +278,39 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ ideState: msg.state });
           break;
 
+        case "pipeline_update":
+          set({ activePipeline: msg.pipeline });
+          break;
+
+        case "pipeline_stage_stream": {
+          const streams = new Map(state.pipelineStageStreams);
+          const existing = streams.get(msg.stageId) || "";
+          streams.set(msg.stageId, existing + msg.chunk);
+          set({ pipelineStageStreams: streams });
+          break;
+        }
+
+        case "commit_ready":
+          set({ activePipeline: msg.pipeline, diffPreview: msg.pipeline.diff || null });
+          sendNotification("AntiClaw", "\u30D1\u30A4\u30D7\u30E9\u30A4\u30F3\u5B8C\u4E86 - \u30B3\u30DF\u30C3\u30C8\u627F\u8A8D\u5F85\u3061");
+          break;
+
+        case "commit_result":
+          set({ lastCommitResult: msg.result });
+          sendNotification("AntiClaw", `\u30B3\u30DF\u30C3\u30C8\u5B8C\u4E86: ${msg.result.hash.slice(0, 8)}`);
+          break;
+
+        case "diff_response":
+          set({ diffPreview: msg.diff });
+          break;
+
+        case "git_status":
+          set({ gitStatus: msg.status });
+          break;
+
         case "error":
           console.error("Server error:", msg.error);
+          set({ lastError: msg.error, lastErrorAt: Date.now() });
           break;
       }
     };
@@ -186,23 +322,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendMessage: (agentId, content) => {
-    const msg: WSClientMessage = { type: "send_message", agentId, content };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "send_message", agentId, content });
   },
 
   createAgent: (role, model) => {
-    const msg: WSClientMessage = { type: "create_agent", role, model };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "create_agent", role, model });
   },
 
   stopAgent: (agentId) => {
-    const msg: WSClientMessage = { type: "stop_agent", agentId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "stop_agent", agentId });
   },
 
   deleteAgent: (agentId) => {
-    const msg: WSClientMessage = { type: "delete_agent", agentId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "delete_agent", agentId });
   },
 
   setActiveAgent: (agentId) => set({ activeAgentId: agentId }),
@@ -212,17 +344,42 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Antigravity IDE actions
   ideSendMessage: (content) => {
-    const msg: WSClientMessage = { type: "ide_send_message", content };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_send_message", content });
   },
 
   ideStopGeneration: () => {
-    const msg: WSClientMessage = { type: "ide_stop_generation" };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_stop_generation" });
   },
 
   ideRequestState: () => {
-    const msg: WSClientMessage = { type: "ide_request_state" };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_request_state" });
   },
+
+  // Pipeline actions (Bed-to-Commit Bridge)
+  startPipeline: (task, model) => {
+    set({ activePipeline: null, pipelineStageStreams: new Map(), lastCommitResult: null, diffPreview: null });
+    safeSend(get, { type: "pipeline_start", task, model });
+  },
+
+  cancelPipeline: (pipelineId) => {
+    safeSend(get, { type: "pipeline_cancel", pipelineId });
+  },
+
+  approveCommit: (pipelineId, approvalToken, message, push) => {
+    safeSend(get, { type: "commit_approve", pipelineId, approvalToken, message, push });
+  },
+
+  rejectCommit: (pipelineId) => {
+    safeSend(get, { type: "commit_reject", pipelineId });
+  },
+
+  requestGitStatus: () => {
+    safeSend(get, { type: "git_status_request" });
+  },
+
+  requestDiff: (pipelineId) => {
+    safeSend(get, { type: "diff_request", pipelineId });
+  },
+
+  clearError: () => set({ lastError: null, lastErrorAt: null }),
 }));

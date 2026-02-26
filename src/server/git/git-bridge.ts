@@ -232,6 +232,11 @@ export class GitBridge {
     request: CommitRequest,
     userEmail: string,
   ): Promise<CommitResult> {
+    // 0. Validate email format
+    if (!/^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(userEmail)) {
+      throw new Error("Invalid email format for commit author");
+    }
+
     // 1. Rate limit check
     if (!this.checkRateLimit(userEmail)) {
       this.audit("commit", userEmail, request.pipelineId, request.branch, "denied", "Rate limit exceeded");

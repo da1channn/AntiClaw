@@ -47,6 +47,10 @@ interface AppState {
   lastCommitResult: CommitResult | null;
   diffPreview: string | null;
 
+  // Error state (visible to UI)
+  lastError: string | null;
+  lastErrorAt: number | null;
+
   // UI
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
@@ -76,6 +80,9 @@ interface AppState {
   rejectCommit: (pipelineId: string) => void;
   requestGitStatus: () => void;
   requestDiff: (pipelineId: string) => void;
+
+  // Error actions
+  clearError: () => void;
 }
 
 const WS_URL =
@@ -108,6 +115,18 @@ function sendNotification(title: string, body: string): void {
   new Notification(title, { body, icon: "/icon-192.svg" });
 }
 
+/** Safely send a message over WebSocket. No-op if not connected. */
+function safeSend(get: () => AppState, msg: WSClientMessage): void {
+  const ws = get().ws;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      console.warn("[WS] Send failed, connection may be closing");
+    }
+  }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
   ws: null,
@@ -120,12 +139,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   gitStatus: null,
   lastCommitResult: null,
   diffPreview: null,
+  lastError: null,
+  lastErrorAt: null,
   sidebarOpen: false,
   agentPanelOpen: false,
   viewMode: "agents",
 
   connect: () => {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    // Prevent duplicate connections
+    const existing = get().ws;
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
 
     const ws = new WebSocket(WS_URL);
 
@@ -138,15 +164,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       heartbeatTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "git_status_request" }));
+          try { ws.send(JSON.stringify({ type: "git_status_request" })); } catch { /* ignore */ }
         }
       }, 25000);
 
       // Listen for online event to trigger immediate reconnect
-      const onOnline = () => {
+      window.addEventListener("online", () => {
         if (!get().connected) get().connect();
-      };
-      window.addEventListener("online", onOnline, { once: true });
+      }, { once: true });
+    };
+
+    ws.onerror = () => {
+      // Error followed by close — handled in onclose
+      console.warn("[WS] Connection error");
     };
 
     ws.onclose = () => {
@@ -159,7 +189,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     ws.onmessage = (event) => {
-      const msg: WSServerMessage = JSON.parse(event.data);
+      let msg: WSServerMessage;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        console.warn("[WS] Failed to parse message:", event.data);
+        return;
+      }
       const state = get();
 
       switch (msg.type) {
@@ -274,6 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         case "error":
           console.error("Server error:", msg.error);
+          set({ lastError: msg.error, lastErrorAt: Date.now() });
           break;
       }
     };
@@ -285,23 +322,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendMessage: (agentId, content) => {
-    const msg: WSClientMessage = { type: "send_message", agentId, content };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "send_message", agentId, content });
   },
 
   createAgent: (role, model) => {
-    const msg: WSClientMessage = { type: "create_agent", role, model };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "create_agent", role, model });
   },
 
   stopAgent: (agentId) => {
-    const msg: WSClientMessage = { type: "stop_agent", agentId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "stop_agent", agentId });
   },
 
   deleteAgent: (agentId) => {
-    const msg: WSClientMessage = { type: "delete_agent", agentId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "delete_agent", agentId });
   },
 
   setActiveAgent: (agentId) => set({ activeAgentId: agentId }),
@@ -311,49 +344,42 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Antigravity IDE actions
   ideSendMessage: (content) => {
-    const msg: WSClientMessage = { type: "ide_send_message", content };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_send_message", content });
   },
 
   ideStopGeneration: () => {
-    const msg: WSClientMessage = { type: "ide_stop_generation" };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_stop_generation" });
   },
 
   ideRequestState: () => {
-    const msg: WSClientMessage = { type: "ide_request_state" };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "ide_request_state" });
   },
 
   // Pipeline actions (Bed-to-Commit Bridge)
   startPipeline: (task, model) => {
-    const msg: WSClientMessage = { type: "pipeline_start", task, model };
     set({ activePipeline: null, pipelineStageStreams: new Map(), lastCommitResult: null, diffPreview: null });
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "pipeline_start", task, model });
   },
 
   cancelPipeline: (pipelineId) => {
-    const msg: WSClientMessage = { type: "pipeline_cancel", pipelineId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "pipeline_cancel", pipelineId });
   },
 
   approveCommit: (pipelineId, approvalToken, message, push) => {
-    const msg: WSClientMessage = { type: "commit_approve", pipelineId, approvalToken, message, push };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "commit_approve", pipelineId, approvalToken, message, push });
   },
 
   rejectCommit: (pipelineId) => {
-    const msg: WSClientMessage = { type: "commit_reject", pipelineId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "commit_reject", pipelineId });
   },
 
   requestGitStatus: () => {
-    const msg: WSClientMessage = { type: "git_status_request" };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "git_status_request" });
   },
 
   requestDiff: (pipelineId) => {
-    const msg: WSClientMessage = { type: "diff_request", pipelineId };
-    get().ws?.send(JSON.stringify(msg));
+    safeSend(get, { type: "diff_request", pipelineId });
   },
+
+  clearError: () => set({ lastError: null, lastErrorAt: null }),
 }));

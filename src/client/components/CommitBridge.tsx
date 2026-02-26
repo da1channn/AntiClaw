@@ -236,11 +236,14 @@ function CommitApproval() {
         <label className="text-[10px] text-gray-500 block mb-1">\u30B3\u30DF\u30C3\u30C8\u30E1\u30C3\u30BB\u30FC\u30B8</label>
         <textarea
           value={commitMessage}
-          onChange={(e) => setCommitMessage(e.target.value)}
+          onChange={(e) => setCommitMessage(e.target.value.slice(0, 500))}
+          maxLength={500}
           className="w-full bg-gray-800/50 rounded-lg px-3 py-2 text-xs font-mono resize-none
             outline-none focus:ring-1 focus:ring-yellow-500/50"
           rows={2}
+          aria-label={"\u30B3\u30DF\u30C3\u30C8\u30E1\u30C3\u30BB\u30FC\u30B8"}
         />
+        <span className="text-[9px] text-gray-600 text-right block">{commitMessage.length}/500</span>
       </div>
 
       {/* Push toggle */}

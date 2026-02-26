@@ -82,7 +82,7 @@ export class CDPBridge extends EventEmitter {
   private ws: WebSocket | null = null;
   private cmdId = 0;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private pendingCommands = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pendingCommands = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
@@ -138,6 +138,7 @@ export class CDPBridge extends EventEmitter {
           // Handle command responses
           if (msg.id !== undefined && this.pendingCommands.has(msg.id)) {
             const pending = this.pendingCommands.get(msg.id)!;
+            clearTimeout(pending.timer); // Clear the timeout to prevent leak
             this.pendingCommands.delete(msg.id);
             if (msg.error) {
               pending.reject(new Error(msg.error.message));
@@ -188,6 +189,7 @@ export class CDPBridge extends EventEmitter {
    */
   private rejectPendingCommands(reason: string): void {
     for (const [id, pending] of this.pendingCommands) {
+      clearTimeout(pending.timer);
       pending.reject(new Error(reason));
       this.pendingCommands.delete(id);
     }
@@ -204,16 +206,14 @@ export class CDPBridge extends EventEmitter {
       }
 
       const id = ++this.cmdId;
-      this.pendingCommands.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-
-      // Timeout after 10s
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pendingCommands.has(id)) {
           this.pendingCommands.delete(id);
           reject(new Error(`CDP command timeout: ${method}`));
         }
       }, 10000);
+      this.pendingCommands.set(id, { resolve, reject, timer });
+      this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
 

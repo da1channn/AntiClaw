@@ -64,13 +64,35 @@ function StreamingBubble({ content }: { content: string }) {
   );
 }
 
-/** Simple markdown to HTML (code blocks, bold, italic, inline code) */
-function formatMarkdown(text: string): string {
+/** Escape HTML special characters to prevent XSS. */
+function escapeHtml(text: string): string {
   return text
-    // Code blocks
-    .replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/** Simple markdown to HTML (code blocks, bold, italic, inline code). Input is escaped first. */
+function formatMarkdown(text: string): string {
+  // Extract code blocks first (protect from escaping)
+  const codeBlocks: string[] = [];
+  const withPlaceholders = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code class="language-${escapeHtml(lang || "")}">${escapeHtml(code)}</code></pre>`);
+    return `\x00CB${idx}\x00`;
+  });
+
+  // Escape remaining text
+  let result = escapeHtml(withPlaceholders);
+
+  // Restore code blocks
+  result = result.replace(/\x00CB(\d+)\x00/g, (_m, idx) => codeBlocks[parseInt(idx, 10)]);
+
+  return result
     // Inline code
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`)
     // Bold
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     // Italic

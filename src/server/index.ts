@@ -20,12 +20,18 @@ import type { WSClientMessage, WSServerMessage, AuthenticatedUser, TeamPipeline 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 64 * 1024 }); // 64KB max
+
+// --- Safety: guard CF_POLICY_BYPASS in production ---
+if (process.env.CF_POLICY_BYPASS === "true" && process.env.NODE_ENV === "production") {
+  console.error("FATAL: CF_POLICY_BYPASS=true is not allowed in production. Exiting.");
+  process.exit(1);
+}
 
 // --- Middleware ---
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "64kb" }));
 
 // --- Orchestrator ---
 const orchestrator = new AgentOrchestrator();
@@ -37,6 +43,16 @@ const wsConnections = new Map<string, Set<WebSocket>>();
 
 // Track active pipelines per session (for commit approval flow)
 const activePipelines = new Map<string, TeamPipeline>();
+
+// Periodic cleanup of stale pipelines (older than 1 hour)
+setInterval(() => {
+  const cutoff = Date.now() - 3600_000;
+  for (const [id, pipeline] of activePipelines) {
+    if (pipeline.updatedAt < cutoff) {
+      activePipelines.delete(id);
+    }
+  }
+}, 600_000); // Every 10 min
 
 // --- CDP Bridge (Antigravity IDE connection) ---
 const cdpBridge = new CDPBridge();

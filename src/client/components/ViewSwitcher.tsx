@@ -6,13 +6,14 @@
 import { useAppStore } from "../lib/store";
 
 const TABS = [
-  { mode: "agents" as const, label: "Agents", icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v-2" },
+  { mode: "agents" as const, label: "Agents" },
+  { mode: "commit-bridge" as const, label: "Commit" },
   { mode: "ide-monitor" as const, label: "IDE" },
   { mode: "code-editor" as const, label: "Editor" },
 ] as const;
 
 export function ViewSwitcher() {
-  const { viewMode, setViewMode, ideState } = useAppStore();
+  const { viewMode, setViewMode, ideState, activePipeline } = useAppStore();
 
   return (
     <div className="flex border-b border-gray-800/50 px-2 gap-1 safe-left safe-right">
@@ -29,6 +30,14 @@ export function ViewSwitcher() {
           `}
         >
           {tab.label}
+
+          {/* Pipeline status indicator */}
+          {tab.mode === "commit-bridge" && activePipeline && ["planning", "executing", "reviewing"].includes(activePipeline.status) && (
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+          )}
+          {tab.mode === "commit-bridge" && activePipeline?.status === "awaiting_approval" && (
+            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+          )}
 
           {/* IDE connection indicator */}
           {tab.mode === "ide-monitor" && ideState?.connected && (

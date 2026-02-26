@@ -11,9 +11,11 @@ import cors from "cors";
 import helmet from "helmet";
 import { requireAuth, verifyCloudflareToken } from "./auth/cloudflare-access.js";
 import { AgentOrchestrator } from "./agents/orchestrator.js";
+import { TeamOrchestrator } from "./agents/team-orchestrator.js";
+import { GitBridge } from "./git/git-bridge.js";
 import { CDPBridge } from "./antigravity/cdp-bridge.js";
 import { createCodeServerProxy, checkCodeServerHealth } from "./antigravity/code-server-proxy.js";
-import type { WSClientMessage, WSServerMessage, AuthenticatedUser } from "../shared/types.js";
+import type { WSClientMessage, WSServerMessage, AuthenticatedUser, TeamPipeline } from "../shared/types.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
@@ -27,9 +29,14 @@ app.use(express.json());
 
 // --- Orchestrator ---
 const orchestrator = new AgentOrchestrator();
+const teamOrchestrator = new TeamOrchestrator();
+const gitBridge = new GitBridge();
 
 // Track WebSocket connections per session
 const wsConnections = new Map<string, Set<WebSocket>>();
+
+// Track active pipelines per session (for commit approval flow)
+const activePipelines = new Map<string, TeamPipeline>();
 
 // --- CDP Bridge (Antigravity IDE connection) ---
 const cdpBridge = new CDPBridge();
@@ -93,6 +100,47 @@ orchestrator.onStreamEnd = (sessionId, agentId, messageId) => {
 
 orchestrator.onError = (sessionId, error, agentId) => {
   broadcastToSession(sessionId, { type: "error", error, agentId });
+};
+
+// Wire team orchestrator events
+teamOrchestrator.onPipelineUpdate = (sessionId, pipeline) => {
+  activePipelines.set(pipeline.id, pipeline);
+  broadcastToSession(sessionId, { type: "pipeline_update", pipeline });
+};
+
+teamOrchestrator.onStageStream = (sessionId, pipelineId, stageId, chunk) => {
+  broadcastToSession(sessionId, { type: "pipeline_stage_stream", pipelineId, stageId, chunk });
+};
+
+teamOrchestrator.onPipelineComplete = (sessionId, pipeline) => {
+  // Generate approval token and commit request
+  const { token, expiresAt } = gitBridge.generateApprovalToken(pipeline.id);
+  const files = teamOrchestrator.collectFileChanges(pipeline);
+  const message = teamOrchestrator.extractCommitMessage(pipeline);
+
+  pipeline.commitRequest = {
+    pipelineId: pipeline.id,
+    message,
+    branch: "", // Will be filled from git status
+    files: files.map((f) => ({ path: f.path, action: "modify" as const })),
+    approvalToken: token,
+    expiresAt,
+  };
+
+  // Get current branch for commit request
+  gitBridge.getStatus().then((status) => {
+    pipeline.commitRequest!.branch = status.branch;
+    activePipelines.set(pipeline.id, pipeline);
+    broadcastToSession(sessionId, { type: "commit_ready", pipeline });
+  }).catch(() => {
+    pipeline.commitRequest!.branch = "main";
+    activePipelines.set(pipeline.id, pipeline);
+    broadcastToSession(sessionId, { type: "commit_ready", pipeline });
+  });
+};
+
+teamOrchestrator.onError = (sessionId, pipelineId, error) => {
+  broadcastToSession(sessionId, { type: "error", error });
 };
 
 // --- REST API ---
@@ -174,6 +222,90 @@ app.post("/api/ide/stop", async (_req, res) => {
   }
 });
 
+// --- Bed-to-Commit Bridge API ---
+
+// Get git status
+app.get("/api/git/status", async (_req, res) => {
+  try {
+    const status = await gitBridge.getStatus();
+    res.json({ ok: true, data: status });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to get git status";
+    res.status(500).json({ ok: false, error: msg });
+  }
+});
+
+// Start a team pipeline
+app.post("/api/pipeline/start", (req, res) => {
+  try {
+    const session = orchestrator.getOrCreateSession(req.user!);
+    const { task, model } = req.body;
+    if (!task || typeof task !== "string") {
+      res.status(400).json({ ok: false, error: "Task is required" });
+      return;
+    }
+    const pipeline = teamOrchestrator.startPipeline(session.id, task, model);
+    res.json({ ok: true, data: pipeline });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to start pipeline";
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+// Cancel a pipeline
+app.post("/api/pipeline/:pipelineId/cancel", (_req, res) => {
+  try {
+    teamOrchestrator.cancelPipeline(_req.params.pipelineId);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to cancel pipeline";
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+// Approve and commit
+app.post("/api/pipeline/:pipelineId/commit", async (req, res) => {
+  try {
+    const pipeline = activePipelines.get(req.params.pipelineId);
+    if (!pipeline || !pipeline.commitRequest) {
+      res.status(404).json({ ok: false, error: "Pipeline or commit request not found" });
+      return;
+    }
+
+    const { approvalToken, message, push } = req.body;
+    const commitRequest = {
+      ...pipeline.commitRequest,
+      approvalToken,
+      message: message || pipeline.commitRequest.message,
+    };
+
+    const result = await gitBridge.executeCommit(commitRequest, req.user!.email);
+
+    if (push) {
+      await gitBridge.push(commitRequest.branch, req.user!.email, pipeline.id);
+      result.pushed = true;
+    }
+
+    pipeline.commitResult = result;
+    pipeline.status = "completed";
+    pipeline.updatedAt = Date.now();
+
+    const session = orchestrator.getOrCreateSession(req.user!);
+    broadcastToSession(session.id, { type: "commit_result", pipelineId: pipeline.id, result });
+    broadcastToSession(session.id, { type: "pipeline_update", pipeline });
+
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Commit failed";
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+// Get audit log
+app.get("/api/git/audit", (_req, res) => {
+  res.json({ ok: true, data: gitBridge.getAuditLog() });
+});
+
 // --- code-server Proxy ---
 // Mount code-server proxy (protected by the same Cloudflare Access SSO)
 app.use("/code", requireAuth, createCodeServerProxy());
@@ -252,6 +384,64 @@ wss.on("connection", async (ws, req) => {
         case "ide_request_state":
           ws.send(JSON.stringify({ type: "ide_state", state: cdpBridge.getState() } satisfies WSServerMessage));
           break;
+
+        // Bed-to-Commit Bridge commands
+        case "pipeline_start":
+          await teamOrchestrator.startPipeline(session.id, msg.task, msg.model);
+          break;
+
+        case "pipeline_cancel":
+          teamOrchestrator.cancelPipeline(msg.pipelineId);
+          break;
+
+        case "commit_approve": {
+          const pipeline = activePipelines.get(msg.pipelineId);
+          if (pipeline?.commitRequest) {
+            try {
+              const commitReq = {
+                ...pipeline.commitRequest,
+                approvalToken: msg.approvalToken,
+                message: msg.message || pipeline.commitRequest.message,
+              };
+              const result = await gitBridge.executeCommit(commitReq, user.email);
+              if (msg.push) {
+                await gitBridge.push(commitReq.branch, user.email, pipeline.id);
+                result.pushed = true;
+              }
+              pipeline.commitResult = result;
+              pipeline.status = "completed";
+              pipeline.updatedAt = Date.now();
+              broadcastToSession(session.id, { type: "commit_result", pipelineId: pipeline.id, result });
+              broadcastToSession(session.id, { type: "pipeline_update", pipeline });
+            } catch (err) {
+              const errorMsg = err instanceof Error ? err.message : "Commit failed";
+              ws.send(JSON.stringify({ type: "error", error: errorMsg } satisfies WSServerMessage));
+            }
+          }
+          break;
+        }
+
+        case "commit_reject": {
+          const rejectedPipeline = activePipelines.get(msg.pipelineId);
+          if (rejectedPipeline) {
+            rejectedPipeline.status = "error";
+            rejectedPipeline.updatedAt = Date.now();
+            activePipelines.delete(msg.pipelineId);
+            broadcastToSession(session.id, { type: "pipeline_update", pipeline: rejectedPipeline });
+          }
+          break;
+        }
+
+        case "git_status_request": {
+          try {
+            const status = await gitBridge.getStatus();
+            ws.send(JSON.stringify({ type: "git_status", status } satisfies WSServerMessage));
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : "Failed to get git status";
+            ws.send(JSON.stringify({ type: "error", error: errorMsg } satisfies WSServerMessage));
+          }
+          break;
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";

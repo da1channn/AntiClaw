@@ -9,7 +9,10 @@ import type {
   AgentMessage,
   AgentRole,
   AntigravityIDEState,
+  CommitResult,
+  GitStatus,
   Session,
+  TeamPipeline,
   WSClientMessage,
   WSServerMessage,
 } from "../../shared/types";
@@ -20,7 +23,7 @@ interface StreamingMessage {
   content: string;
 }
 
-type ViewMode = "agents" | "ide-monitor" | "code-editor";
+type ViewMode = "agents" | "ide-monitor" | "code-editor" | "commit-bridge";
 
 interface AppState {
   // Connection
@@ -36,6 +39,12 @@ interface AppState {
 
   // Streaming
   streamingMessages: Map<string, StreamingMessage>;
+
+  // Pipeline & Git (Bed-to-Commit Bridge)
+  activePipeline: TeamPipeline | null;
+  pipelineStageStreams: Map<string, string>;
+  gitStatus: GitStatus | null;
+  lastCommitResult: CommitResult | null;
 
   // UI
   sidebarOpen: boolean;
@@ -58,6 +67,13 @@ interface AppState {
   ideSendMessage: (content: string) => void;
   ideStopGeneration: () => void;
   ideRequestState: () => void;
+
+  // Pipeline actions
+  startPipeline: (task: string, model?: string) => void;
+  cancelPipeline: (pipelineId: string) => void;
+  approveCommit: (pipelineId: string, approvalToken: string, message?: string, push?: boolean) => void;
+  rejectCommit: (pipelineId: string) => void;
+  requestGitStatus: () => void;
 }
 
 const WS_URL =
@@ -72,6 +88,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeAgentId: null,
   ideState: null,
   streamingMessages: new Map(),
+  activePipeline: null,
+  pipelineStageStreams: new Map(),
+  gitStatus: null,
+  lastCommitResult: null,
   sidebarOpen: false,
   agentPanelOpen: false,
   viewMode: "agents",
@@ -173,6 +193,30 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ ideState: msg.state });
           break;
 
+        case "pipeline_update":
+          set({ activePipeline: msg.pipeline });
+          break;
+
+        case "pipeline_stage_stream": {
+          const streams = new Map(state.pipelineStageStreams);
+          const existing = streams.get(msg.stageId) || "";
+          streams.set(msg.stageId, existing + msg.chunk);
+          set({ pipelineStageStreams: streams });
+          break;
+        }
+
+        case "commit_ready":
+          set({ activePipeline: msg.pipeline });
+          break;
+
+        case "commit_result":
+          set({ lastCommitResult: msg.result });
+          break;
+
+        case "git_status":
+          set({ gitStatus: msg.status });
+          break;
+
         case "error":
           console.error("Server error:", msg.error);
           break;
@@ -223,6 +267,33 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   ideRequestState: () => {
     const msg: WSClientMessage = { type: "ide_request_state" };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  // Pipeline actions (Bed-to-Commit Bridge)
+  startPipeline: (task, model) => {
+    const msg: WSClientMessage = { type: "pipeline_start", task, model };
+    set({ activePipeline: null, pipelineStageStreams: new Map(), lastCommitResult: null });
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  cancelPipeline: (pipelineId) => {
+    const msg: WSClientMessage = { type: "pipeline_cancel", pipelineId };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  approveCommit: (pipelineId, approvalToken, message, push) => {
+    const msg: WSClientMessage = { type: "commit_approve", pipelineId, approvalToken, message, push };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  rejectCommit: (pipelineId) => {
+    const msg: WSClientMessage = { type: "commit_reject", pipelineId };
+    get().ws?.send(JSON.stringify(msg));
+  },
+
+  requestGitStatus: () => {
+    const msg: WSClientMessage = { type: "git_status_request" };
     get().ws?.send(JSON.stringify(msg));
   },
 }));

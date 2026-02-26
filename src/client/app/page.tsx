@@ -11,6 +11,7 @@ import { ChatView } from "../components/ChatView";
 import { MessageInput } from "../components/MessageInput";
 import { AgentCreator } from "../components/AgentCreator";
 import { IDEMonitor } from "../components/IDEMonitor";
+import { CommitBridge } from "../components/CommitBridge";
 import { ViewSwitcher } from "../components/ViewSwitcher";
 
 export default function Home() {
@@ -47,7 +48,9 @@ export default function Home() {
 
         {/* Main content area */}
         <div className="flex-1 flex flex-col min-w-0">
-          {viewMode === "ide-monitor" ? (
+          {viewMode === "commit-bridge" ? (
+            <CommitBridge />
+          ) : viewMode === "ide-monitor" ? (
             <IDEMonitor />
           ) : viewMode === "code-editor" ? (
             <div className="flex-1 flex items-center justify-center">
